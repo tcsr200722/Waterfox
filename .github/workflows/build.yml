@@ -94,6 +94,10 @@ jobs:
           curl -L "https://www.7-zip.org/a/7z2408-linux-x64.tar.xz" | tar xJ
           sudo mv 7zz /usr/local/bin/7z
           curl https://rclone.org/install.sh | sudo bash
+          rustup toolchain install 1.81.0
+          rustup default 1.81.0-x86_64-unknown-linux-gnu
+          rustup toolchain uninstall stable-x86_64-unknown-linux-gnu
+          rustup target add x86_64-pc-windows-msvc
       - name: "\U0001F4E4 Checkout"
         uses: actions/checkout@v4
         with:
@@ -210,6 +214,10 @@ jobs:
           curl -L "https://www.7-zip.org/a/7z2408-linux-x64.tar.xz" | tar xJ
           sudo mv 7zz /usr/local/bin/7z
           curl https://rclone.org/install.sh | sudo bash
+          rustup toolchain install 1.81.0
+          rustup default 1.81.0-x86_64-unknown-linux-gnu
+          rustup toolchain uninstall stable-x86_64-unknown-linux-gnu
+          rustup target add x86_64-pc-windows-msvc
       - name: "\U0001F4E4 Checkout"
         uses: actions/checkout@v4
         with:
@@ -420,6 +428,10 @@ jobs:
           curl -L "https://www.7-zip.org/a/7z2408-linux-x64.tar.xz" | tar xJ
           sudo mv 7zz /usr/local/bin/7z
           curl https://rclone.org/install.sh | sudo bash
+          rustup toolchain install 1.81.0
+          rustup default 1.81.0-x86_64-unknown-linux-gnu
+          rustup toolchain uninstall stable-x86_64-unknown-linux-gnu
+          rustup target add ${{ matrix.arch }}
       - name: "\U0001F4E4 Checkout"
         uses: actions/checkout@v4
         with:
@@ -533,6 +545,10 @@ jobs:
           curl -L "https://www.7-zip.org/a/7z2408-linux-x64.tar.xz" | tar xJ
           sudo mv 7zz /usr/local/bin/7z
           curl https://rclone.org/install.sh | sudo bash
+          rustup toolchain install 1.81.0
+          rustup default 1.81.0-x86_64-unknown-linux-gnu
+          rustup toolchain uninstall stable-x86_64-unknown-linux-gnu
+          rustup target add ${{ matrix.arch }}
       - name: "\U0001F4E4 Checkout"
         uses: actions/checkout@v4
         with:
@@ -741,6 +757,7 @@ jobs:
           sudo mv 7zz /usr/local/bin/7z
           sudo apt install patchelf
           python3 -m pip install cryptography
+          rustup override set 1.81.0
       - name: "\U0001F4E4 Checkout"
         uses: actions/checkout@v4
         with:
